@@ -8,7 +8,7 @@ import urllib.parse
 import uuid
 
 # ============= ТВОИ КЛЮЧИ =============
-GEMINI_API_KEY = "AIzaSyAGwROvPS3Jw8XcyjOuwX2AtRc2rdciYg8"  # ВСТАВЬ КЛЮЧ GEMINI
+GEMINI_API_KEY = "AIzaSyAGwROvPS3Jw8XcyjOuwX2AtRc2rdciYg8"
 TELEGRAM_TOKEN = "7216980289:AAHzEXM6Cwp1NPoBbxXxglSXoxaMpUcqPL8"
 
 # ============= БАЗА ДАННЫХ =============
@@ -49,14 +49,12 @@ def create_new_chat(conn, user_id):
     conn.commit()
     return chat_id
 
-# ============= GEMINI API (БЕСПЛАТНО НАВСЕГДА) =============
+# ============= GEMINI API (ИСПРАВЛЕННЫЙ URL) =============
 def gemini_chat(messages):
-    """Общение с Gemini 1.5 Flash - 100% бесплатно, 60 запросов/мин"""
     try:
-        # Берем последнее сообщение пользователя
         user_message = messages[-1]["content"]
         
-        # Формируем контекст из истории
+        # Формируем контекст
         context = ""
         for msg in messages[:-1]:
             if msg["role"] == "user":
@@ -66,9 +64,11 @@ def gemini_chat(messages):
         
         prompt = f"{context}User: {user_message}\nAssistant:"
         
-        # Запрос к Gemini API
+        # ПРАВИЛЬНЫЙ URL - ВАЖНО!
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        
         response = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}",
+            url,
             json={
                 "contents": [{
                     "parts": [{"text": prompt}]
@@ -76,8 +76,6 @@ def gemini_chat(messages):
                 "generationConfig": {
                     "temperature": 0.7,
                     "maxOutputTokens": 800,
-                    "topP": 0.95,
-                    "topK": 40
                 }
             },
             timeout=30
@@ -86,13 +84,12 @@ def gemini_chat(messages):
         response.raise_for_status()
         result = response.json()
         
-        # Извлекаем ответ
         if 'candidates' in result and len(result['candidates']) > 0:
             if 'content' in result['candidates'][0]:
                 if 'parts' in result['candidates'][0]['content']:
                     return result['candidates'][0]['content']['parts'][0]['text']
         
-        return "❌ Не удалось получить ответ от Gemini"
+        return "❌ Не удалось получить ответ"
         
     except Exception as e:
         print(f"Gemini Error: {e}")
@@ -125,16 +122,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
-async def new_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    conn = context.user_data.get('db_conn', init_db())
-    
-    chat_id = create_new_chat(conn, user_id)
-    context.user_data['current_chat'] = chat_id
-    context.user_data['db_conn'] = conn
-    
-    await update.message.reply_text(f"✅ Создан новый чат #{chat_id}")
-
 async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = ' '.join(context.args)
     if not prompt:
@@ -155,6 +142,16 @@ async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await waiting_msg.edit_text(f"❌ Ошибка: {str(e)}")
 
+async def new_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    conn = context.user_data.get('db_conn', init_db())
+    
+    chat_id = create_new_chat(conn, user_id)
+    context.user_data['current_chat'] = chat_id
+    context.user_data['db_conn'] = conn
+    
+    await update.message.reply_text(f"✅ Создан новый чат #{chat_id}")
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_message = update.message.text
@@ -173,13 +170,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id = create_new_chat(conn, user_id)
         context.user_data['current_chat'] = chat_id
     
-    # Сохраняем сообщение пользователя
     save_message(conn, user_id, chat_id, "user", user_message)
     
-    # Получаем историю
     history = get_chat_history(conn, user_id, chat_id, 10)
     
-    # Формируем сообщения для Gemini
     messages = []
     for role, content in history:
         messages.append({"role": role, "content": content})
@@ -189,10 +183,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         bot_reply = gemini_chat(messages)
-        
-        # Сохраняем ответ
         save_message(conn, user_id, chat_id, "assistant", bot_reply)
-        
         await waiting_msg.edit_text(bot_reply)
     except Exception as e:
         await waiting_msg.edit_text(f"❌ Ошибка: {str(e)}")
@@ -203,7 +194,7 @@ async def chats_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     chats = get_user_chats(conn, user_id)
     if not chats:
-        await update.message.reply_text("📭 У тебя нет чатов. Создай /newchat")
+        await update.message.reply_text("📭 Нет чатов. Создай /newchat")
         return
     
     text = "📁 *Твои чаты:*\n\n"
@@ -211,7 +202,7 @@ async def chats_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current = " ✅" if context.user_data.get('current_chat') == chat_id else ""
         text += f"{i}. `{chat_id}` - {title}{current}\n"
     
-    text += "\n🔹 Переключиться: /switch [ID чата]"
+    text += "\n🔹 /switch [ID чата]"
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def switch_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -256,7 +247,7 @@ def main():
     app.add_handler(CommandHandler("clear", clear_chat))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("✅ Бот запущен и слушает сообщения!")
+    print("✅ Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
