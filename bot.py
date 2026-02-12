@@ -1,26 +1,21 @@
 import os
-import logging
-from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler
-from deepseek import DeepSeekAPI
-import replicate
 import sqlite3
-from sqlite3 import Connection
+from datetime import datetime
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import requests
 import json
+from flask import Flask
+import threading
+import urllib.parse
 
-# ============= КОНФИГУРАЦИЯ =============
-DEEPSEEK_API_KEY = "sk-..."  # ВСТАВЬ СВОЙ КЛЮЧ
-REPLICATE_API_TOKEN = "r-..."  # ВСТАВЬ СВОЙ ТОКЕН
-TELEGRAM_TOKEN = "7234567890:AAH..."  # ВСТАВЬ ТОКЕН БОТА
-
-# Инициализация API
-deepseek = DeepSeekAPI(DEEPSEEK_API_KEY)
-os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
+# ============= ТВОИ КЛЮЧИ =============
+DEEPSEEK_API_KEY = "sk-f960cb9054e048ff93c48d10c6e6e516"
+TELEGRAM_TOKEN = "7216980289:AAHzEXM6Cwp1NPoBbxXxglSXoxaMpUcqPL8"
 
 # ============= БАЗА ДАННЫХ =============
 def init_db():
-    conn = sqlite3.connect('chats.db')
+    conn = sqlite3.connect('chats.db', check_same_thread=False)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS conversations
                  (user_id INTEGER, chat_id TEXT, role TEXT, content TEXT, timestamp DATETIME)''')
@@ -57,12 +52,32 @@ def create_new_chat(conn, user_id):
     conn.commit()
     return chat_id
 
-# ============= ОБРАБОТЧИКИ КОМАНД =============
+# ============= DEEPSEEK API =============
+def deepseek_chat(messages):
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    data = {
+        "model": "deepseek-chat",
+        "messages": messages,
+        "temperature": 0.7
+    }
+    
+    response = requests.post(
+        "https://api.deepseek.com/v1/chat/completions",
+        headers=headers,
+        json=data
+    )
+    
+    return response.json()['choices'][0]['message']['content']
+
+# ============= ОБРАБОТЧИКИ =============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     conn = init_db()
     
-    # Создаем первый чат для пользователя
     chats = get_user_chats(conn, user_id)
     if not chats:
         chat_id = create_new_chat(conn, user_id)
@@ -73,13 +88,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['db_conn'] = conn
     
     await update.message.reply_text(
-        "🤖 *AI Бот готов к работе!*\n\n"
-        "🔹 Просто пиши сообщения — я отвечу\n"
-        "🔹 /draw [описание] — нарисовать картинку\n"
+        "🤖 *AI Бот готов!*\n\n"
+        "🔹 Просто пиши сообщения — отвечу\n"
+        "🔹 /draw [описание] — нарисовать картинку (бесплатно, Flux)\n"
         "🔹 /newchat — новый диалог\n"
-        "🔹 /chats — переключить чат\n"
+        "🔹 /chats — список чатов\n"
         "🔹 /clear — очистить историю\n\n"
-        "_Работает на DeepSeek + Replicate_",
+        "_Работает на DeepSeek + Pollinations AI_",
         parse_mode='Markdown'
     )
 
@@ -96,20 +111,21 @@ async def new_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = ' '.join(context.args)
     if not prompt:
-        await update.message.reply_text("❌ Напиши описание: /draw кот в космосе")
+        await update.message.reply_text("❌ Напиши: /draw кот в космосе")
         return
     
-    waiting_msg = await update.message.reply_text("🎨 Генерирую изображение...")
+    waiting_msg = await update.message.reply_text("🎨 Генерирую изображение... (Flux)")
     
     try:
-        output = replicate.run(
-            "black-forest-labs/flux-schnell",
-            input={"prompt": prompt}
-        )
+        # Pollinations AI - 100% бесплатно, без ключей, без лимитов
+        encoded_prompt = urllib.parse.quote(prompt)
+        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&model=flux&nologo=true"
         
-        image_url = output[0] if isinstance(output, list) else output
         await waiting_msg.delete()
-        await update.message.reply_photo(photo=image_url, caption=f"🖼 {prompt}")
+        await update.message.reply_photo(
+            photo=image_url,
+            caption=f"🖼 {prompt}\n⚡ Flux via Pollinations AI"
+        )
     except Exception as e:
         await waiting_msg.edit_text(f"❌ Ошибка: {str(e)}")
 
@@ -129,13 +145,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['current_chat'] = chat_id
         context.user_data['db_conn'] = conn
     
-    # Сохраняем сообщение пользователя
     save_message(conn, user_id, chat_id, "user", user_message)
     
-    # Получаем историю
     history = get_chat_history(conn, user_id, chat_id, 10)
     
-    # Формируем контекст для DeepSeek
     messages = []
     for role, content in history:
         messages.append({"role": role, "content": content})
@@ -144,27 +157,81 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     waiting_msg = await update.message.reply_text("💭 Думаю...")
     
     try:
-        response = deepseek.chat_completion(messages)
-        bot_reply = response['choices'][0]['message']['content']
-        
-        # Сохраняем ответ бота
+        bot_reply = deepseek_chat(messages)
         save_message(conn, user_id, chat_id, "assistant", bot_reply)
-        
         await waiting_msg.edit_text(bot_reply)
     except Exception as e:
         await waiting_msg.edit_text(f"❌ Ошибка: {str(e)}")
 
-# ============= ЗАПУСК =============
-def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+async def chats_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    conn = context.user_data.get('db_conn', init_db())
     
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("newchat", new_chat))
-    app.add_handler(CommandHandler("draw", draw))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    chats = get_user_chats(conn, user_id)
+    if not chats:
+        await update.message.reply_text("У тебя нет чатов. Создай /newchat")
+        return
     
-    print("✅ Бот запущен...")
-    app.run_polling()
+    text = "📁 *Твои чаты:*\n\n"
+    for i, (chat_id, title, created) in enumerate(chats, 1):
+        current = " ✅" if context.user_data.get('current_chat') == chat_id else ""
+        text += f"{i}. `{chat_id}` - {title}{current}\n"
+    
+    text += "\n🔹 Переключиться: /switch [ID чата]"
+    await update.message.reply_text(text, parse_mode='Markdown')
+
+async def switch_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ Укажи ID чата: /switch 12345678")
+        return
+    
+    chat_id = context.args[0]
+    user_id = update.effective_user.id
+    conn = context.user_data.get('db_conn', init_db())
+    
+    chats = [c[0] for c in get_user_chats(conn, user_id)]
+    
+    if chat_id in chats:
+        context.user_data['current_chat'] = chat_id
+        await update.message.reply_text(f"✅ Переключился на чат {chat_id}")
+    else:
+        await update.message.reply_text("❌ Чат не найден")
+
+async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    chat_id = context.user_data.get('current_chat')
+    conn = context.user_data.get('db_conn', init_db())
+    
+    c = conn.cursor()
+    c.execute("DELETE FROM conversations WHERE user_id=? AND chat_id=?", (user_id, chat_id))
+    conn.commit()
+    
+    await update.message.reply_text(f"🧹 История чата {chat_id} очищена")
+
+# ============= Flask обманка для Render =============
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖 AI Telegram Bot работает! DeepSeek + Pollinations"
+
+def run_bot():
+    bot_app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CommandHandler("newchat", new_chat))
+    bot_app.add_handler(CommandHandler("draw", draw))
+    bot_app.add_handler(CommandHandler("chats", chats_list))
+    bot_app.add_handler(CommandHandler("switch", switch_chat))
+    bot_app.add_handler(CommandHandler("clear", clear_chat))
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    print("✅ Бот запущен!")
+    bot_app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    # Запускаем бота в отдельном потоке
+    threading.Thread(target=run_bot, daemon=True).start()
+    # Запускаем Flask сервер
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
