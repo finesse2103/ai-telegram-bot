@@ -4,10 +4,8 @@ from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import requests
-import json
-from flask import Flask
-import threading
 import urllib.parse
+import threading
 import time
 
 # ============= ТВОИ КЛЮЧИ =============
@@ -215,40 +213,24 @@ async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(f"🧹 История чата {chat_id} очищена")
 
-# ============= Flask для Render =============
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "🤖 AI Telegram Bot работает! DeepSeek + Pollinations"
-
-@app.route('/health')
-def health():
-    return "OK", 200
-
-def run_bot():
-    try:
-        bot_app = Application.builder().token(TELEGRAM_TOKEN).build()
-        
-        bot_app.add_handler(CommandHandler("start", start))
-        bot_app.add_handler(CommandHandler("newchat", new_chat))
-        bot_app.add_handler(CommandHandler("draw", draw))
-        bot_app.add_handler(CommandHandler("chats", chats_list))
-        bot_app.add_handler(CommandHandler("switch", switch_chat))
-        bot_app.add_handler(CommandHandler("clear", clear_chat))
-        bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        
-        print("✅ Telegram бот запущен и слушает сообщения...")
-        bot_app.run_polling(allowed_updates=Update.ALL_TYPES)
-    except Exception as e:
-        print(f"❌ Ошибка бота: {e}")
+# ============= ЗАПУСК =============
+def main():
+    print("🚀 Запускаем Telegram бота...")
+    
+    # Создаем приложение
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # Добавляем обработчики
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("newchat", new_chat))
+    app.add_handler(CommandHandler("draw", draw))
+    app.add_handler(CommandHandler("chats", chats_list))
+    app.add_handler(CommandHandler("switch", switch_chat))
+    app.add_handler(CommandHandler("clear", clear_chat))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    print("✅ Бот запущен и слушает сообщения!")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    # Запускаем бота в фоне
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
-    print("✅ Бот-поток запущен")
-    
-    # Запускаем Flask
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    main()
