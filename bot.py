@@ -8,6 +8,7 @@ import json
 from flask import Flask
 import threading
 import urllib.parse
+import time
 
 # ============= ТВОИ КЛЮЧИ =============
 DEEPSEEK_API_KEY = "sk-f960cb9054e048ff93c48d10c6e6e516"
@@ -65,13 +66,18 @@ def deepseek_chat(messages):
         "temperature": 0.7
     }
     
-    response = requests.post(
-        "https://api.deepseek.com/v1/chat/completions",
-        headers=headers,
-        json=data
-    )
-    
-    return response.json()['choices'][0]['message']['content']
+    try:
+        response = requests.post(
+            "https://api.deepseek.com/v1/chat/completions",
+            headers=headers,
+            json=data,
+            timeout=30
+        )
+        response.raise_for_status()
+        return response.json()['choices'][0]['message']['content']
+    except Exception as e:
+        print(f"DeepSeek Error: {e}")
+        raise
 
 # ============= ОБРАБОТЧИКИ =============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -90,11 +96,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 *AI Бот готов!*\n\n"
         "🔹 Просто пиши сообщения — отвечу\n"
-        "🔹 /draw [описание] — нарисовать картинку (бесплатно, Flux)\n"
+        "🔹 /draw [описание] — нарисовать картинку\n"
         "🔹 /newchat — новый диалог\n"
         "🔹 /chats — список чатов\n"
         "🔹 /clear — очистить историю\n\n"
-        "_Работает на DeepSeek + Pollinations AI_",
+        "_Работает на DeepSeek + Pollinations_",
         parse_mode='Markdown'
     )
 
@@ -114,17 +120,16 @@ async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Напиши: /draw кот в космосе")
         return
     
-    waiting_msg = await update.message.reply_text("🎨 Генерирую изображение... (Flux)")
+    waiting_msg = await update.message.reply_text("🎨 Генерирую изображение...")
     
     try:
-        # Pollinations AI - 100% бесплатно, без ключей, без лимитов
         encoded_prompt = urllib.parse.quote(prompt)
         image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&model=flux&nologo=true"
         
         await waiting_msg.delete()
         await update.message.reply_photo(
             photo=image_url,
-            caption=f"🖼 {prompt}\n⚡ Flux via Pollinations AI"
+            caption=f"🖼 {prompt}"
         )
     except Exception as e:
         await waiting_msg.edit_text(f"❌ Ошибка: {str(e)}")
@@ -133,9 +138,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_message = update.message.text
     
-    conn = context.user_data.get('db_conn', init_db())
-    chat_id = context.user_data.get('current_chat')
+    conn = context.user_data.get('db_conn')
+    if not conn:
+        conn = init_db()
+        context.user_data['db_conn'] = conn
     
+    chat_id = context.user_data.get('current_chat')
     if not chat_id:
         chats = get_user_chats(conn, user_id)
         if chats:
@@ -143,7 +151,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             chat_id = create_new_chat(conn, user_id)
         context.user_data['current_chat'] = chat_id
-        context.user_data['db_conn'] = conn
     
     save_message(conn, user_id, chat_id, "user", user_message)
     
@@ -208,30 +215,40 @@ async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(f"🧹 История чата {chat_id} очищена")
 
-# ============= Flask обманка для Render =============
+# ============= Flask для Render =============
 app = Flask(__name__)
 
 @app.route('/')
 def home():
     return "🤖 AI Telegram Bot работает! DeepSeek + Pollinations"
 
+@app.route('/health')
+def health():
+    return "OK", 200
+
 def run_bot():
-    bot_app = Application.builder().token(TELEGRAM_TOKEN).build()
-    
-    bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("newchat", new_chat))
-    bot_app.add_handler(CommandHandler("draw", draw))
-    bot_app.add_handler(CommandHandler("chats", chats_list))
-    bot_app.add_handler(CommandHandler("switch", switch_chat))
-    bot_app.add_handler(CommandHandler("clear", clear_chat))
-    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    print("✅ Бот запущен!")
-    bot_app.run_polling()
+    try:
+        bot_app = Application.builder().token(TELEGRAM_TOKEN).build()
+        
+        bot_app.add_handler(CommandHandler("start", start))
+        bot_app.add_handler(CommandHandler("newchat", new_chat))
+        bot_app.add_handler(CommandHandler("draw", draw))
+        bot_app.add_handler(CommandHandler("chats", chats_list))
+        bot_app.add_handler(CommandHandler("switch", switch_chat))
+        bot_app.add_handler(CommandHandler("clear", clear_chat))
+        bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        print("✅ Telegram бот запущен и слушает сообщения...")
+        bot_app.run_polling(allowed_updates=Update.ALL_TYPES)
+    except Exception as e:
+        print(f"❌ Ошибка бота: {e}")
 
 if __name__ == "__main__":
-    # Запускаем бота в отдельном потоке
-    threading.Thread(target=run_bot, daemon=True).start()
-    # Запускаем Flask сервер
+    # Запускаем бота в фоне
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    print("✅ Бот-поток запущен")
+    
+    # Запускаем Flask
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
