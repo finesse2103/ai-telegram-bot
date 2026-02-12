@@ -5,11 +5,10 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import requests
 import urllib.parse
-import threading
-import time
+import uuid
 
 # ============= ТВОИ КЛЮЧИ =============
-DEEPSEEK_API_KEY = "sk-f960cb9054e048ff93c48d10c6e6e516"
+GEMINI_API_KEY = "AIzaSyAGwROvPS3Jw8XcyjOuwX2AtRc2rdciYg8"  # ВСТАВЬ КЛЮЧ GEMINI
 TELEGRAM_TOKEN = "7216980289:AAHzEXM6Cwp1NPoBbxXxglSXoxaMpUcqPL8"
 
 # ============= БАЗА ДАННЫХ =============
@@ -29,7 +28,7 @@ def save_message(conn, user_id, chat_id, role, content):
               (user_id, chat_id, role, content, datetime.now()))
     conn.commit()
 
-def get_chat_history(conn, user_id, chat_id, limit=20):
+def get_chat_history(conn, user_id, chat_id, limit=10):
     c = conn.cursor()
     c.execute("SELECT role, content FROM conversations WHERE user_id=? AND chat_id=? ORDER BY timestamp DESC LIMIT ?",
               (user_id, chat_id, limit))
@@ -43,7 +42,6 @@ def get_user_chats(conn, user_id):
     return c.fetchall()
 
 def create_new_chat(conn, user_id):
-    import uuid
     chat_id = str(uuid.uuid4())[:8]
     c = conn.cursor()
     c.execute("INSERT INTO user_chats VALUES (?,?,?,?)",
@@ -51,31 +49,54 @@ def create_new_chat(conn, user_id):
     conn.commit()
     return chat_id
 
-# ============= DEEPSEEK API =============
-def deepseek_chat(messages):
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    data = {
-        "model": "deepseek-chat",
-        "messages": messages,
-        "temperature": 0.7
-    }
-    
+# ============= GEMINI API (БЕСПЛАТНО НАВСЕГДА) =============
+def gemini_chat(messages):
+    """Общение с Gemini 1.5 Flash - 100% бесплатно, 60 запросов/мин"""
     try:
+        # Берем последнее сообщение пользователя
+        user_message = messages[-1]["content"]
+        
+        # Формируем контекст из истории
+        context = ""
+        for msg in messages[:-1]:
+            if msg["role"] == "user":
+                context += f"User: {msg['content']}\n"
+            else:
+                context += f"Assistant: {msg['content']}\n"
+        
+        prompt = f"{context}User: {user_message}\nAssistant:"
+        
+        # Запрос к Gemini API
         response = requests.post(
-            "https://api.deepseek.com/v1/chat/completions",
-            headers=headers,
-            json=data,
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}",
+            json={
+                "contents": [{
+                    "parts": [{"text": prompt}]
+                }],
+                "generationConfig": {
+                    "temperature": 0.7,
+                    "maxOutputTokens": 800,
+                    "topP": 0.95,
+                    "topK": 40
+                }
+            },
             timeout=30
         )
+        
         response.raise_for_status()
-        return response.json()['choices'][0]['message']['content']
+        result = response.json()
+        
+        # Извлекаем ответ
+        if 'candidates' in result and len(result['candidates']) > 0:
+            if 'content' in result['candidates'][0]:
+                if 'parts' in result['candidates'][0]['content']:
+                    return result['candidates'][0]['content']['parts'][0]['text']
+        
+        return "❌ Не удалось получить ответ от Gemini"
+        
     except Exception as e:
-        print(f"DeepSeek Error: {e}")
-        raise
+        print(f"Gemini Error: {e}")
+        return f"❌ Ошибка Gemini: {str(e)}"
 
 # ============= ОБРАБОТЧИКИ =============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -98,7 +119,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔹 /newchat — новый диалог\n"
         "🔹 /chats — список чатов\n"
         "🔹 /clear — очистить историю\n\n"
-        "_Работает на DeepSeek + Pollinations_",
+        "✨ *Работает на:*\n"
+        "🧠 Gemini 1.5 Flash (100% бесплатно)\n"
+        "🎨 Pollinations AI (Flux)",
         parse_mode='Markdown'
     )
 
@@ -150,10 +173,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id = create_new_chat(conn, user_id)
         context.user_data['current_chat'] = chat_id
     
+    # Сохраняем сообщение пользователя
     save_message(conn, user_id, chat_id, "user", user_message)
     
+    # Получаем историю
     history = get_chat_history(conn, user_id, chat_id, 10)
     
+    # Формируем сообщения для Gemini
     messages = []
     for role, content in history:
         messages.append({"role": role, "content": content})
@@ -162,8 +188,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     waiting_msg = await update.message.reply_text("💭 Думаю...")
     
     try:
-        bot_reply = deepseek_chat(messages)
+        bot_reply = gemini_chat(messages)
+        
+        # Сохраняем ответ
         save_message(conn, user_id, chat_id, "assistant", bot_reply)
+        
         await waiting_msg.edit_text(bot_reply)
     except Exception as e:
         await waiting_msg.edit_text(f"❌ Ошибка: {str(e)}")
@@ -174,7 +203,7 @@ async def chats_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     chats = get_user_chats(conn, user_id)
     if not chats:
-        await update.message.reply_text("У тебя нет чатов. Создай /newchat")
+        await update.message.reply_text("📭 У тебя нет чатов. Создай /newchat")
         return
     
     text = "📁 *Твои чаты:*\n\n"
@@ -215,12 +244,10 @@ async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ============= ЗАПУСК =============
 def main():
-    print("🚀 Запускаем Telegram бота...")
+    print("🚀 Запуск Telegram бота на Gemini 1.5 Flash...")
     
-    # Создаем приложение
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Добавляем обработчики
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("newchat", new_chat))
     app.add_handler(CommandHandler("draw", draw))
