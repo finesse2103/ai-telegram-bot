@@ -11,35 +11,36 @@ import time
 # ============= ТВОИ КЛЮЧИ =============
 TELEGRAM_TOKEN = "7216980289:AAHzEXM6Cwp1NPoBbxXxglSXoxaMpUcqPL8"
 
-# ============= БЕСПЛАТНЫЙ AI (DeepSeek через proxy) =============
-# ============= БЕСПЛАТНЫЙ AI (Pollinations - ИСПРАВЛЕНО) =============
+# ============= DEEPSEEK API (БЕСПЛАТНО, ТВОЙ КЛЮЧ) =============
 def free_ai_chat(user_message):
-    """Бесплатный AI через Pollinations API"""
+    """DeepSeek с твоим ключом"""
     try:
-        # Правильный формат для Pollinations
+        headers = {
+            "Authorization": f"Bearer sk-f960cb9054e048ff93c48d10c6e6e516",
+            "Content-Type": "application/json"
+        }
+        
         response = requests.post(
-            "https://text.pollinations.ai/",
+            "https://api.deepseek.com/v1/chat/completions",
+            headers=headers,
             json={
+                "model": "deepseek-chat",
                 "messages": [{"role": "user", "content": user_message}],
-                "model": "openai",
-                "temperature": 0.7,
-                "max_tokens": 500
+                "temperature": 0.7
             },
-            headers={"Content-Type": "application/json"},
             timeout=30
         )
         
         if response.status_code == 200:
-            # Pollinations возвращает просто текст
-            return response.text.strip()
+            result = response.json()
+            return result['choices'][0]['message']['content']
         else:
-            print(f"Pollinations Error: {response.status_code} - {response.text}")
+            print(f"DeepSeek Error: {response.status_code}")
             return f"🤖 [Ответ на: {user_message[:50]}...]"
             
     except Exception as e:
         print(f"AI Error: {e}")
         return f"Получил сообщение: {user_message[:100]}"
-
 # ============= БАЗА ДАННЫХ =============
 def init_db():
     conn = sqlite3.connect('chats.db', check_same_thread=False)
