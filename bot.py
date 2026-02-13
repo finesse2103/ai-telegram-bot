@@ -12,35 +12,28 @@ import time
 TELEGRAM_TOKEN = "7216980289:AAHzEXM6Cwp1NPoBbxXxglSXoxaMpUcqPL8"
 
 # ============= БЕСПЛАТНЫЙ AI (DeepSeek через proxy) =============
+# ============= БЕСПЛАТНЫЙ AI (Pollinations - ИСПРАВЛЕНО) =============
 def free_ai_chat(user_message):
-    """Бесплатный AI через публичные API - работает везде"""
+    """Бесплатный AI через Pollinations API"""
     try:
-        # Вариант 1: DeepSeek (нужен ключ - вставь если есть)
-        # headers = {"Authorization": "Bearer sk-твой_ключ"}
-        # response = requests.post(
-        #     "https://api.deepseek.com/v1/chat/completions",
-        #     headers=headers,
-        #     json={
-        #         "model": "deepseek-chat",
-        #         "messages": [{"role": "user", "content": user_message}]
-        #     },
-        #     timeout=30
-        # )
-        
-        # Вариант 2: Бесплатный публичный API (без ключа)
+        # Правильный формат для Pollinations
         response = requests.post(
             "https://text.pollinations.ai/",
             json={
                 "messages": [{"role": "user", "content": user_message}],
                 "model": "openai",
-                "temperature": 0.7
+                "temperature": 0.7,
+                "max_tokens": 500
             },
+            headers={"Content-Type": "application/json"},
             timeout=30
         )
         
         if response.status_code == 200:
+            # Pollinations возвращает просто текст
             return response.text.strip()
         else:
+            print(f"Pollinations Error: {response.status_code} - {response.text}")
             return f"🤖 [Ответ на: {user_message[:50]}...]"
             
     except Exception as e:
