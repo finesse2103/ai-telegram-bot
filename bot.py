@@ -6,41 +6,57 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import requests
 import urllib.parse
 import uuid
-import time
+import logging
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ============= ТВОИ КЛЮЧИ =============
 TELEGRAM_TOKEN = "7216980289:AAHzEXM6Cwp1NPoBbxXxglSXoxaMpUcqPL8"
+DEEPSEEK_KEY = "sk-f960cb9054e048ff93c48d10c6e6e516"
 
-# ============= DEEPSEEK API (БЕСПЛАТНО, ТВОЙ КЛЮЧ) =============
-def free_ai_chat(user_message):
-    """DeepSeek с твоим ключом"""
+# ============= БЕСПЛАТНЫЙ AI (DeepSeek) =============
+def get_ai_response(user_message):
+    """Получение ответа от DeepSeek API"""
     try:
         headers = {
-            "Authorization": f"Bearer sk-f960cb9054e048ff93c48d10c6e6e516",
+            "Authorization": f"Bearer {DEEPSEEK_KEY}",
             "Content-Type": "application/json"
         }
         
+        payload = {
+            "model": "deepseek-chat",
+            "messages": [
+                {"role": "system", "content": "Ты полезный ассистент. Отвечай кратко и по делу."},
+                {"role": "user", "content": user_message}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 500
+        }
+        
+        logger.info(f"Отправка запроса к DeepSeek: {user_message[:50]}...")
         response = requests.post(
             "https://api.deepseek.com/v1/chat/completions",
             headers=headers,
-            json={
-                "model": "deepseek-chat",
-                "messages": [{"role": "user", "content": user_message}],
-                "temperature": 0.7
-            },
+            json=payload,
             timeout=30
         )
         
         if response.status_code == 200:
             result = response.json()
-            return result['choices'][0]['message']['content']
+            ai_response = result['choices'][0]['message']['content']
+            logger.info(f"Получен ответ от DeepSeek: {ai_response[:50]}...")
+            return ai_response
         else:
-            print(f"DeepSeek Error: {response.status_code}")
-            return f"🤖 [Ответ на: {user_message[:50]}...]"
+            logger.error(f"Ошибка DeepSeek API: {response.status_code}")
+            logger.error(f"Ответ: {response.text}")
+            return f"🤖 [DeepSeek временно недоступен. Ваше сообщение: {user_message[:50]}...]"
             
     except Exception as e:
-        print(f"AI Error: {e}")
-        return f"Получил сообщение: {user_message[:100]}"
+        logger.error(f"Ошибка при запросе к DeepSeek: {e}")
+        return f"🤖 [Ошибка: {str(e)[:50]}]"
+
 # ============= БАЗА ДАННЫХ =============
 def init_db():
     conn = sqlite3.connect('chats.db', check_same_thread=False)
@@ -58,7 +74,7 @@ def save_message(conn, user_id, chat_id, role, content):
               (user_id, chat_id, role, content, datetime.now()))
     conn.commit()
 
-def get_chat_history(conn, user_id, chat_id, limit=10):
+def get_chat_history(conn, user_id, chat_id, limit=5):
     c = conn.cursor()
     c.execute("SELECT role, content FROM conversations WHERE user_id=? AND chat_id=? ORDER BY timestamp DESC LIMIT ?",
               (user_id, chat_id, limit))
@@ -79,11 +95,12 @@ def create_new_chat(conn, user_id):
     conn.commit()
     return chat_id
 
-# ============= ОБРАБОТЧИКИ =============
+# ============= ОБРАБОТЧИКИ КОМАНД =============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     conn = init_db()
     
+    # Получаем или создаем чат
     chats = get_user_chats(conn, user_id)
     if not chats:
         chat_id = create_new_chat(conn, user_id)
@@ -95,15 +112,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         "🤖 *AI Бот полностью готов!*\n\n"
-        "🔹 *Просто пиши* — я отвечу\n"
-        "🔹 /draw [описание] — нарисовать картинку\n"
-        "🔹 /newchat — новый диалог\n"
-        "🔹 /chats — список чатов\n"
-        "🔹 /clear — очистить историю\n\n"
-        "✨ *Работает на:*\n"
-        "🧠 Бесплатный AI (Pollinations)\n"
-        "🎨 Flux через Pollinations\n"
-        "💾 Память на разные чаты",
+        "✅ *Просто пиши* — я отвечу\n"
+        "🎨 /draw [описание] — нарисовать картинку\n"
+        "💬 /newchat — новый диалог\n"
+        "📋 /chats — список чатов\n"
+        "🧹 /clear — очистить историю\n\n"
+        "✨ *Работает на DeepSeek AI*",
         parse_mode='Markdown'
     )
 
@@ -131,7 +145,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_message = update.message.text
     
-    # Получаем или создаем соединение с БД
+    # Получаем соединение с БД
     conn = context.user_data.get('db_conn')
     if not conn:
         conn = init_db()
@@ -150,15 +164,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Сохраняем сообщение пользователя
     save_message(conn, user_id, chat_id, "user", user_message)
     
-    # Получаем историю
-    history = get_chat_history(conn, user_id, chat_id, 5)
-    
-    # Отправляем "печатает..."
+    # Отправляем статус "печатает..."
     await update.message.chat.send_action(action="typing")
     
     try:
         # Получаем ответ от AI
-        bot_reply = free_ai_chat(user_message)
+        bot_reply = get_ai_response(user_message)
         
         # Сохраняем ответ
         save_message(conn, user_id, chat_id, "assistant", bot_reply)
@@ -167,7 +178,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(bot_reply)
         
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        error_msg = f"❌ Ошибка: {str(e)}"
+        logger.error(error_msg)
+        await update.message.reply_text(error_msg)
 
 async def new_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -191,7 +204,6 @@ async def chats_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "📁 *Твои чаты:*\n\n"
     for i, (chat_id, title, created) in enumerate(chats, 1):
         current = " ✅" if context.user_data.get('current_chat') == chat_id else ""
-        created_str = created[:16] if created else ""
         text += f"{i}. `{chat_id}` - {title}{current}\n"
     
     text += "\n🔹 Переключиться: /switch [ID чата]"
@@ -227,11 +239,12 @@ async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ============= ЗАПУСК =============
 def main():
-    print("🚀 Запуск Telegram бота...")
-    print(f"🤖 Токен: {TELEGRAM_TOKEN[:10]}...")
+    logger.info("🚀 Запуск Telegram бота...")
     
+    # Создаем приложение
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
+    # Добавляем обработчики
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("newchat", new_chat))
     app.add_handler(CommandHandler("draw", draw))
@@ -240,7 +253,9 @@ def main():
     app.add_handler(CommandHandler("clear", clear_chat))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("✅ Бот запущен и готов к работе!")
+    logger.info("✅ Бот запущен и готов к работе!")
+    
+    # Запускаем бота
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
